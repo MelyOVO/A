@@ -1,5 +1,5 @@
-local cloneref = (cloneref or clonereference or function(instance: any)
-    return instance
+local cloneref = (cloneref or clonereference or function(instance)
+	return instance
 end)
 
 local TweenService = cloneref(game:GetService("TweenService"))
@@ -8,176 +8,339 @@ local Players = cloneref(game:GetService("Players"))
 
 local protectgui = protectgui or (syn and syn.protect_gui) or function() end
 local gethui = gethui or function()
-    return CoreGui
-end
-
-local function SafeParentUI(Instance: Instance, Parent: Instance | () -> Instance)
-    local success, _error = pcall(function()
-        if not Parent then
-            Parent = CoreGui
-        end
-
-        local DestinationParent
-        if typeof(Parent) == "function" then
-            DestinationParent = Parent()
-        else
-            DestinationParent = Parent
-        end
-
-        Instance.Parent = DestinationParent
-    end)
-
-    if not (success and Instance.Parent) then
-        local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
-        Instance.Parent = LocalPlayer:WaitForChild("PlayerGui", math.huge)
-    end
-end
-
-local function ParentUI(UI: Instance, SkipHiddenUI: boolean?)
-    if SkipHiddenUI then
-        SafeParentUI(UI, CoreGui)
-        return
-    end
-
-    pcall(protectgui, UI)
-    SafeParentUI(UI, gethui)
+	return CoreGui
 end
 
 local GUI_NAME = "Tailor"
-local targetGui = gethui()
-local screenGui = targetGui:FindFirstChild(GUI_NAME)
+local CONTAINER_NAME = "NotifyContainer"
+local MAX_VISIBLE = 5
+local DEFAULT_LENGTH = 3
+local SLIDE_OFFSET = 50
+local CARD_WIDTH = 270
 
-if not screenGui then
-    screenGui = Instance.new("ScreenGui")
-    screenGui.Name = GUI_NAME
-    screenGui.ResetOnSpawn = false
-    screenGui.DisplayOrder = 998
-    ParentUI(screenGui)
+local THEME = {
+	BackgroundTop = Color3.fromRGB(32, 32, 40),
+	BackgroundBottom = Color3.fromRGB(20, 20, 26),
+	Stroke = Color3.fromRGB(70, 70, 88),
+	Title = Color3.fromRGB(255, 255, 255),
+	Text = Color3.fromRGB(190, 192, 205),
+	Track = Color3.fromRGB(45, 45, 56),
+	Neutral = Color3.fromRGB(52, 52, 64),
+}
+
+local ACCENTS = {
+	info = Color3.fromRGB(80, 160, 255),
+	success = Color3.fromRGB(80, 210, 130),
+	warning = Color3.fromRGB(255, 190, 70),
+	error = Color3.fromRGB(245, 90, 90),
+}
+
+local BG_VISIBLE = 0.1
+local STROKE_VISIBLE = 0.35
+
+local TWEEN_SLIDE_IN = TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local TWEEN_FADE_IN = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local TWEEN_SLIDE_OUT = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+local TWEEN_FADE_OUT = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+local TWEEN_COLLAPSE = TweenInfo.new(0.28, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut)
+
+local function create(className, props, parent)
+	local inst = Instance.new(className)
+	for key, value in pairs(props) do
+		inst[key] = value
+	end
+	inst.Parent = parent
+	return inst
 end
 
-local container = screenGui:FindFirstChild("NotifyContainer")
-if not container then
-    container = Instance.new("Frame")
-    container.Name = "NotifyContainer"
-    container.Parent = screenGui
-    container.BackgroundTransparency = 1
-    container.Size = UDim2.new(0, 260, 1, -40)
-    container.Position = UDim2.new(1, -280, 0, 0)
-    container.ClipsDescendants = false
+local function play(inst, info, props)
+	local tween = TweenService:Create(inst, info, props)
+	tween:Play()
+	return tween
+end
 
-    local layout = Instance.new("UIListLayout")
-    layout.Parent = container
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.VerticalAlignment = Enum.VerticalAlignment.Bottom
-    layout.Padding = UDim.new(0, 10)
+local function mountGui(gui)
+	pcall(protectgui, gui)
+	local ok = pcall(function()
+		gui.Parent = gethui()
+	end)
+	if not (ok and gui.Parent) then
+		local player = Players.LocalPlayer or Players.PlayerAdded:Wait()
+		gui.Parent = player:WaitForChild("PlayerGui", 10)
+	end
+end
+
+local function getContainer()
+	local root = gethui()
+	local gui = root:FindFirstChild(GUI_NAME)
+
+	if not gui then
+		gui = create("ScreenGui", {
+			Name = GUI_NAME,
+			ResetOnSpawn = false,
+			DisplayOrder = 998,
+			IgnoreGuiInset = true,
+		})
+		mountGui(gui)
+	end
+
+	local existing = gui:FindFirstChild(CONTAINER_NAME)
+	if existing then
+		return existing
+	end
+
+	local container = create("Frame", {
+		Name = CONTAINER_NAME,
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, -20, 1, -20),
+		Size = UDim2.new(0, CARD_WIDTH, 1, -40),
+		ClipsDescendants = false,
+	}, gui)
+
+	create("UIListLayout", {
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		VerticalAlignment = Enum.VerticalAlignment.Bottom,
+		Padding = UDim.new(0, 0),
+	}, container)
+
+	return container
+end
+
+local container = getContainer()
+local active = {}
+local orderCounter = 0
+
+local function makeButton(parent, config, defaultText, color, widthScale, onClick)
+	local btn = create("TextButton", {
+		Size = UDim2.new(widthScale, widthScale < 1 and -4 or 0, 1, 0),
+		BackgroundColor3 = color,
+		BorderSizePixel = 0,
+		AutoButtonColor = true,
+		Font = Enum.Font.GothamBold,
+		Text = config.Text or defaultText,
+		TextColor3 = THEME.Title,
+		TextSize = 12,
+	}, parent)
+
+	create("UICorner", { CornerRadius = UDim.new(0, 6) }, btn)
+
+	btn.MouseButton1Click:Connect(function()
+		if config.Callback then
+			task.spawn(function()
+				local ok, err = pcall(config.Callback)
+				if not ok then
+					warn("[Tailor Notify] 回调执行异常: " .. tostring(err))
+				end
+			end)
+		end
+		onClick()
+	end)
 end
 
 local function notify(config)
-    local titleText = config.Title or "提醒"
-    local descText = config.Description or ""
-    local length = config.Length or 3
-    local hasButtons = config.Accept or config.Dismiss
-    local frameHeight = hasButtons and 110 or 80
+	local cfg = config or {}
 
-    local wrapper = Instance.new("Frame")
-    wrapper.BackgroundTransparency = 1
-    wrapper.Size = UDim2.new(1, 0, 0, frameHeight)
-    wrapper.Parent = container
+	local accentColor = ACCENTS[cfg.Type or "info"] or ACCENTS.info
+	local hasButtons = cfg.Accept ~= nil or cfg.Dismiss ~= nil
+	local autoClose = (not hasButtons) or cfg.Length ~= nil
+	local length = math.max(cfg.Length or DEFAULT_LENGTH, 0.5)
 
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 1, 0)
-    frame.Position = UDim2.new(1, 300, 0, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-    frame.BackgroundTransparency = 0.2
-    frame.Parent = wrapper
-    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
-    local stroke = Instance.new("UIStroke", frame)
-    stroke.Color = Color3.fromRGB(60, 60, 75)
-    stroke.Thickness = 1.5
+	local title = cfg.Title or "提醒"
+	local description = cfg.Description or ""
+	local hasDesc = (description ~= "")
 
-    local titleLbl = Instance.new("TextLabel", frame)
-    titleLbl.BackgroundTransparency = 1
-    titleLbl.Position = UDim2.new(0, 15, 0, 12)
-    titleLbl.Size = UDim2.new(1, -30, 0, 18)
-    titleLbl.Font = Enum.Font.GothamBold
-    titleLbl.Text = titleText
-    titleLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-    titleLbl.TextSize = 14
-    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+	while #active >= MAX_VISIBLE do
+		local oldest = table.remove(active, 1)
+		if oldest then
+			oldest()
+		end
+	end
 
-    local descLbl = Instance.new("TextLabel", frame)
-    descLbl.BackgroundTransparency = 1
-    descLbl.Position = UDim2.new(0, 15, 0, 32)
-    descLbl.Size = UDim2.new(1, -30, 0, hasButtons and 28 or 30)
-    descLbl.Font = Enum.Font.GothamMedium
-    descLbl.Text = descText
-    descLbl.TextColor3 = Color3.fromRGB(200, 200, 200)
-    descLbl.TextSize = 11
-    descLbl.TextXAlignment = Enum.TextXAlignment.Left
-    descLbl.TextYAlignment = Enum.TextYAlignment.Top
-    descLbl.TextWrapped = true
+	orderCounter += 1
 
-    if not hasButtons then
-        local barBg = Instance.new("Frame", frame)
-        barBg.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-        barBg.BorderSizePixel = 0
-        barBg.Position = UDim2.new(0, 15, 1, -12)
-        barBg.Size = UDim2.new(1, -30, 0, 3)
-        Instance.new("UICorner", barBg).CornerRadius = UDim.new(1, 0)
+	local textLen = #description
+	local estLines = hasDesc and (textLen > 60 and 3 or (textLen > 28 and 2 or 1)) or 0
+	local cardHeight = 36 + (estLines * 16) + (hasButtons and 36 or 0) + (autoClose and 8 or 0)
+	cardHeight = math.clamp(cardHeight, 56, 140)
 
-        local barFill = Instance.new("Frame", barBg)
-        barFill.BackgroundColor3 = Color3.fromRGB(80, 160, 255)
-        barFill.BorderSizePixel = 0
-        barFill.Size = UDim2.new(1, 0, 1, 0)
-        Instance.new("UICorner", barFill).CornerRadius = UDim.new(1, 0)
-        TweenService:Create(barFill, TweenInfo.new(length, Enum.EasingStyle.Linear), {Size = UDim2.new(0, 0, 1, 0)}):Play()
-    end
+	local wrapper = create("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, cardHeight + 10),
+		LayoutOrder = orderCounter,
+	}, container)
 
-    local closed = false
-    local function closeNotify()
-        if closed then return end
-        closed = true
-        local tweenOut = TweenService:Create(frame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {Position = UDim2.new(1, 300, 0, 0)})
-        tweenOut:Play()
-        tweenOut.Completed:Wait()
-        wrapper:Destroy()
-    end
+	local card = create("Frame", {
+		Size = UDim2.new(1, 0, 0, cardHeight),
+		Position = UDim2.new(1, SLIDE_OFFSET, 0, 0),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}, wrapper)
+	create("UICorner", { CornerRadius = UDim.new(0, 9) }, card)
+	create("UIGradient", {
+		Color = ColorSequence.new(THEME.BackgroundTop, THEME.BackgroundBottom),
+		Rotation = 90,
+	}, card)
 
-    if hasButtons then
-        local btnY = frameHeight - 35
+	local stroke = create("UIStroke", {
+		Color = THEME.Stroke:Lerp(accentColor, 0.3),
+		Thickness = 1.2,
+		Transparency = 1,
+	}, card)
 
-        local function makeBtn(text, xPos, width, color, callback)
-            local btn = Instance.new("TextButton", frame)
-            btn.Position = UDim2.new(0, xPos, 0, btnY)
-            btn.Size = UDim2.new(0, width, 0, 24)
-            btn.BackgroundColor3 = color
-            btn.Font = Enum.Font.GothamBold
-            btn.Text = text
-            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            btn.TextSize = 11
-            btn.BorderSizePixel = 0
-            Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-            btn.MouseButton1Click:Connect(function()
-                if callback then callback() end
-                closeNotify()
-            end)
-        end
+	local accent = create("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 8, 0.5, 0),
+		Size = UDim2.new(0, 3, 0, math.max(cardHeight - 20, 16)),
+		BackgroundColor3 = accentColor,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}, card)
+	create("UICorner", { CornerRadius = UDim.new(1, 0) }, accent)
 
-        if config.Accept and config.Dismiss then
-            makeBtn(config.Accept.Text or "确认", 15, 107, Color3.fromRGB(0, 120, 215), config.Accept.Callback)
-            makeBtn(config.Dismiss.Text or "关闭", 128, 107, Color3.fromRGB(60, 60, 70), config.Dismiss.Callback)
-        elseif config.Accept then
-            makeBtn(config.Accept.Text or "确认", 15, 220, Color3.fromRGB(0, 120, 215), config.Accept.Callback)
-        elseif config.Dismiss then
-            makeBtn(config.Dismiss.Text or "关闭", 15, 220, Color3.fromRGB(60, 60, 70), config.Dismiss.Callback)
-        end
-    end
+	local content = create("CanvasGroup", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 1, 0),
+		GroupTransparency = 1,
+		ZIndex = 2,
+	}, card)
+	create("UIPadding", {
+		PaddingTop = UDim.new(0, 10),
+		PaddingBottom = UDim.new(0, 10),
+		PaddingLeft = UDim.new(0, 20),
+		PaddingRight = UDim.new(0, 14),
+	}, content)
+	create("UIListLayout", {
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 4),
+	}, content)
 
-    TweenService:Create(frame, TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {Position = UDim2.new(0, 0, 0, 0)}):Play()
+	create("TextLabel", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 16),
+		Font = Enum.Font.GothamBold,
+		Text = title,
+		TextColor3 = THEME.Title,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = 1,
+	}, content)
 
-    if not hasButtons then
-        task.delay(length, closeNotify)
-    end
+	if hasDesc then
+		create("TextLabel", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, estLines * 16),
+			Font = Enum.Font.GothamMedium,
+			Text = description,
+			TextColor3 = THEME.Text,
+			TextSize = 11,
+			TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			LayoutOrder = 2,
+		}, content)
+	end
+
+	local closed = false
+	local progressTween = nil
+	local closeFn
+
+	local function close()
+		if closed then return end
+		closed = true
+
+		local index = table.find(active, closeFn)
+		if index then
+			table.remove(active, index)
+		end
+
+		if progressTween then
+			progressTween:Cancel()
+			progressTween:Destroy()
+			progressTween = nil
+		end
+
+		play(card, TWEEN_SLIDE_OUT, { Position = UDim2.new(1, SLIDE_OFFSET, 0, 0) })
+		play(card, TWEEN_FADE_OUT, { BackgroundTransparency = 1 })
+		play(stroke, TWEEN_FADE_OUT, { Transparency = 1 })
+		play(accent, TWEEN_FADE_OUT, { BackgroundTransparency = 1 })
+		play(content, TWEEN_FADE_OUT, { GroupTransparency = 1 })
+
+		task.delay(0.2, function()
+			if not wrapper.Parent then return end
+			local collapse = play(wrapper, TWEEN_COLLAPSE, { Size = UDim2.new(1, 0, 0, 0) })
+			collapse.Completed:Connect(function()
+				wrapper:Destroy()
+			end)
+		end)
+
+		task.delay(1.0, function()
+			if wrapper.Parent then
+				wrapper:Destroy()
+			end
+		end)
+	end
+	closeFn = close
+	table.insert(active, close)
+
+	if autoClose then
+		local track = create("Frame", {
+			BackgroundColor3 = THEME.Track,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 0, 2),
+			LayoutOrder = 3,
+		}, content)
+		create("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
+
+		local fill = create("Frame", {
+			BackgroundColor3 = accentColor,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 1, 0),
+		}, track)
+		create("UICorner", { CornerRadius = UDim.new(1, 0) }, fill)
+
+		progressTween = TweenService:Create(fill, TweenInfo.new(length, Enum.EasingStyle.Linear), {
+			Size = UDim2.new(0, 0, 1, 0),
+		})
+	end
+
+	if hasButtons then
+		local row = create("Frame", {
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 24),
+			LayoutOrder = 4,
+		}, content)
+		create("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, 6),
+		}, row)
+
+		local width = (cfg.Accept ~= nil and cfg.Dismiss ~= nil) and 0.5 or 1
+
+		if cfg.Accept then
+			makeButton(row, cfg.Accept, "确认", accentColor:Lerp(Color3.fromRGB(0, 0, 0), 0.25), width, close)
+		end
+		if cfg.Dismiss then
+			makeButton(row, cfg.Dismiss, "关闭", THEME.Neutral, width, close)
+		end
+	end
+
+	play(card, TWEEN_SLIDE_IN, { Position = UDim2.new(0, 0, 0, 0) })
+	play(card, TWEEN_FADE_IN, { BackgroundTransparency = BG_VISIBLE })
+	play(stroke, TWEEN_FADE_IN, { Transparency = STROKE_VISIBLE })
+	play(accent, TWEEN_FADE_IN, { BackgroundTransparency = 0 })
+	play(content, TWEEN_FADE_IN, { GroupTransparency = 0 })
+
+	if progressTween then
+		progressTween:Play()
+	end
+	if autoClose then
+		task.delay(length, close)
+	end
+
+	return { Close = close }
 end
 
 return notify
