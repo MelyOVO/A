@@ -997,6 +997,9 @@ function library.new(library, name, theme)
 				local max = max or 10
 				local default = default or min
 				local precise = precise or false
+				if not precise and (min % 1 ~= 0 or max % 1 ~= 0 or default % 1 ~= 0) then
+					precise = true
+				end
 				library.flags[flag] = default
 				assert(text, "No text provided")
 				assert(flag, "No flag provided")
@@ -1128,7 +1131,7 @@ function library.new(library, name, theme)
 					if value then percent = (value - min) / (max - min) end
 					percent = math.clamp(percent, 0, 1)
 					if precise then
-						value = value or tonumber(string.format("%.1f", tostring(min + (max - min) * percent)))
+						value = value or tonumber(string.format("%.2f", min + (max - min) * percent))
 					else
 						value = value or math.floor(min + (max - min) * percent)
 					end
@@ -1138,11 +1141,16 @@ function library.new(library, name, theme)
 					safeCall("Slider", callback, tonumber(value))
 				end
 
+				local adjustStep = 1
+				if precise then
+					adjustStep = math.floor(((max - min) / 100) / 0.01 + 0.5) * 0.01
+					if adjustStep < 0.01 then adjustStep = 0.01 end
+				end
 				GiveSignal(MinSlider.MouseButton1Click:Connect(function()
-					funcs:SetValue(math.clamp(library.flags[flag] - 1, min, max))
+					funcs:SetValue(math.clamp(library.flags[flag] - adjustStep, min, max))
 				end))
 				GiveSignal(AddSlider.MouseButton1Click:Connect(function()
-					funcs:SetValue(math.clamp(library.flags[flag] + 1, min, max))
+					funcs:SetValue(math.clamp(library.flags[flag] + adjustStep, min, max))
 				end))
 				funcs:SetValue(default)
 
@@ -1166,20 +1174,38 @@ function library.new(library, name, theme)
 				GiveSignal(SliderValue.Focused:Connect(function() boxFocused = true end))
 				GiveSignal(SliderValue.FocusLost:Connect(function()
 					boxFocused = false
-					if SliderValue.Text == "" then funcs:SetValue(default) end
+					if precise then
+						local num = tonumber(SliderValue.Text)
+						if not num then
+							funcs:SetValue(default)
+							return
+						end
+						funcs:SetValue(math.clamp(num, min, max))
+					else
+						if SliderValue.Text == "" then funcs:SetValue(default) end
+					end
 				end))
 				GiveSignal(SliderValue:GetPropertyChangedSignal("Text"):Connect(function()
 					if not boxFocused then return end
-					SliderValue.Text = SliderValue.Text:gsub("%D+", "")
-					local text = SliderValue.Text
-					if not tonumber(text) then
+					if precise then
+						SliderValue.Text = SliderValue.Text:gsub("[^%d%.%-]", "")
+						local n = 0
+						SliderValue.Text = SliderValue.Text:gsub("%.", function(c)
+							n = n + 1
+							return n > 1 and "" or c
+						end)
+					else
 						SliderValue.Text = SliderValue.Text:gsub("%D+", "")
-					elseif not allowed[text] then
-						if tonumber(text) > max then
-							text = max
-							SliderValue.Text = tostring(max)
+						local text = SliderValue.Text
+						if not tonumber(text) then
+							SliderValue.Text = SliderValue.Text:gsub("%D+", "")
+						elseif not allowed[text] then
+							if tonumber(text) > max then
+								text = max
+								SliderValue.Text = tostring(max)
+							end
+							funcs:SetValue(tonumber(text))
 						end
-						funcs:SetValue(tonumber(text))
 					end
 				end))
 
